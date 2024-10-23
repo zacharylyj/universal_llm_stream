@@ -1,4 +1,6 @@
 import { OpenAIClient, AzureKeyCredential } from "@azure/openai";
+import { BedrockRuntimeClient, ConverseStreamCommand } from "@aws-sdk/client-bedrock-runtime";
+
 const defaultService = 'Azure'
 
 export const handler = awslambda.streamifyResponse(
@@ -20,6 +22,9 @@ export const handler = awslambda.streamifyResponse(
         } = body;
         if (service == 'Azure') {
             azurecall(deployment, params, systemPrompt, queryPrompt, history, callback, responseStream)
+        }
+        if (service == 'Bedrock') {
+            bedrockcall(deployment, params, systemPrompt, queryPrompt, history, callback, responseStream)
         }
 
     }
@@ -68,7 +73,7 @@ async function azurecall(deployment, params, systemPrompt, queryPrompt, history,
         const completion = await client.streamChatCompletions(
             deployment, // string
             messages, // sting[]
-            params // Optional parameters like top_p, temperature, etc.
+            params // extra params
         );
 
         let finalResponse = {
@@ -96,7 +101,6 @@ async function azurecall(deployment, params, systemPrompt, queryPrompt, history,
         }
         responseStream.end(); // Ensure to close the stream
 
-        // Handle callback: return entire conversation history
         if (callback) {
             return
         }
@@ -106,4 +110,70 @@ async function azurecall(deployment, params, systemPrompt, queryPrompt, history,
         responseStream.end();
     }
 
+}
+
+async function bedrockcall(deployment, params, systemPrompt, queryPrompt, history, callback, responseStream) {
+    // Initialize Bedrock client
+    const client = new BedrockRuntimeClient({ region: "us-east-1" });
+
+    // Set the Claude model ID for Bedrock
+    const modelId = "anthropic.claude-3-5-sonnet-20240620-v1:0";  // Replace with Claude 3.5 model ID if different
+
+    try {
+        // Prepare messages by combining systemPrompt, history, and queryPrompt
+        let messages = [];
+        if (systemPrompt) {
+            const systemMessage = { role: "system", content: systemPrompt };
+            messages.push(systemMessage);
+        } else {
+            return errorMessage("System Prompt (systemPrompt) missing", responseStream)
+        }
+        if (history && Array.isArray(history)) {
+            messages = [...messages, ...history];
+        }
+        if (queryPrompt) {
+            const queryMessage = { role: "user", content: queryPrompt };
+            messages.push(queryMessage);
+        } else {
+            return errorMessage("User Query (queryPrompt) missing", responseStream)
+        }
+
+        // Ensure that messages are valid
+        if (!messages || messages.length === 0) {
+            throw new Error("No valid messages provided.");
+        }
+        // Create a command with Claude 3.5 model ID
+        const command = new ConverseStreamCommand({
+            modelId,
+            messages: [{ role: "user", content: [{ text: queryPrompt }] }], // Claude format
+            inferenceConfig: params || { maxTokens: 512, temperature: 0.5, topP: 0.9 }
+        });
+
+        // Send the command and stream response
+        const response = await client.send(command);
+
+        let finalResponse = {
+            history: messages,
+            userMessage: queryPrompt,
+            assistantResponse: ""
+        };
+
+        // Stream response text in real-time
+        for await (const item of response.stream) {
+            if (item.contentBlockDelta) {
+                let content = item.contentBlockDelta.delta?.text;
+                responseStream.write(content);
+                finalResponse.assistantResponse += content;
+            }
+        }
+        responseStream.end(); // Close the stream when complete
+
+        if (callback) {
+            return callback(finalResponse);  // Trigger any callback
+        }
+
+    } catch (error) {
+        console.error("Error occurred:", error);
+        responseStream.end();
+    }
 }
