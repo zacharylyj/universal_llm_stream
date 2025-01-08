@@ -25,6 +25,6 @@ GET, POST
 
 
 in your enviroment
-AZURE_API_KEY: 308ryhisfda08fha009j09
+AZURE_API_KEY: 1234567890
 AZURE_API_VERSION: 2023-03-15-preview
 AZURE_ENDPOINT: https://johndoe.openai.azure.com/
